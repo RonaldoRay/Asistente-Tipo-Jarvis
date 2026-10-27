@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Jarvis · Asistente personal</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #05090f; --panel: #0b1420; --text: #d8f3ff; --muted: #6f93a8;
+    --accent: #2ee6ff; --accent2: #1a8fb3; --border: #153247; --warn: #ff6b5e;
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  html { scroll-padding-top: env(safe-area-inset-top, 0px); height: 100%; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100%; color: var(--text); background: var(--bg);
+    background-image: radial-gradient(ellipse at 50% 0%, #0d2a3d 0%, var(--bg) 60%);
+    font-family: "Rajdhani", "Segoe UI", system-ui, sans-serif;
+    display: flex; justify-content: center;
+  }
+  .app { width: 100%; max-width: 720px; height: 100%; display: flex; flex-direction: column; padding: 0 16px; }
+  header { display: flex; justify-content: space-between; align-items: center; padding: 14px 2px 4px; letter-spacing: 4px; font-size: 14px; color: var(--accent); }
+  .opts { display: flex; gap: 6px; }
+  .opts button { background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 6px; padding: 4px 9px; font: inherit; font-size: 12px; letter-spacing: 1px; cursor: pointer; }
+  .opts button.on { color: var(--accent); border-color: var(--accent); }
+
+  /* el orbe central, cambia de animación según el estado */
+  .stage { display: flex; flex-direction: column; align-items: center; padding: 14px 0 8px; }
+  .orb { position: relative; width: 120px; height: 120px; border-radius: 50%; }
+  .orb .core { position: absolute; inset: 30px; border-radius: 50%; background: radial-gradient(circle, #bff6ff 0%, var(--accent) 45%, var(--accent2) 100%); box-shadow: 0 0 30px var(--accent), 0 0 70px rgba(46,230,255,.35); }
+  .orb .ring { position: absolute; inset: 0; border-radius: 50%; border: 2px dashed var(--accent2); animation: spin 14s linear infinite; }
+  .orb .ring.b { inset: 12px; border: 2px solid transparent; border-top-color: var(--accent); border-bottom-color: var(--accent); animation: spin 5s linear infinite reverse; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.18); } }
+  .orb[data-state="listening"] .core { animation: pulse 1s ease-in-out infinite; background: radial-gradient(circle, #fff 0%, #7dffb0 50%, #17a85b 100%); box-shadow: 0 0 40px #4dffa0; }
+  .orb[data-state="thinking"] .ring.b { animation-duration: 1s; }
+  .orb[data-state="speaking"] .core { animation: pulse .5s ease-in-out infinite; }
+  #status { margin-top: 10px; font-size: 12px; letter-spacing: 3px; color: var(--muted); text-transform: uppercase; }
+
+  #chat { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 6px 0; }
+  .msg { max-width: 88%; padding: 9px 13px; border-radius: 10px; font-size: 16px; line-height: 1.4; white-space: pre-wrap; word-wrap: break-word; border: 1px solid var(--border); }
+  .user { align-self: flex-end; background: #0f2a3a; }
+  .bot { align-self: flex-start; background: var(--panel); border-left: 3px solid var(--accent); }
+  .bot.error { border-left-color: var(--warn); color: var(--warn); }
+
+  .bar { display: flex; gap: 8px; padding: 10px 0 14px; }
+  input { flex: 1; padding: 11px 13px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); font: inherit; font-size: 16px; }
+  input:focus { outline: 1px solid var(--accent); }
+  .bar button { border: 1px solid var(--accent); background: transparent; color: var(--accent); border-radius: 8px; padding: 0 16px; font: inherit; font-size: 16px; cursor: pointer; }
+  .bar button:disabled { opacity: .4; cursor: default; }
+  #mic.on { background: var(--accent); color: #031018; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <span>J.A.R.V.I.S.</span>
+    <div class="opts">
+      <button id="vozBtn" class="on">VOZ</button>
+      <button id="wakeBtn">OYE JARVIS</button>
+      <button id="manosBtn">MANOS LIBRES</button>
+    </div>
+  </header>
+  <div class="stage">
+    <div class="orb" id="orb" data-state="idle"><div class="ring"></div><div class="ring b"></div><div class="core"></div></div>
+    <div id="status">En espera</div>
+  </div>
+  <div id="chat"></div>
+  <div class="bar">
+    <button id="mic" title="Hablar">🎤</button>
+    <input id="input" placeholder="Háblame o escribe…" autocomplete="off">
+    <button id="send">Enviar</button>
+  </div>
+</div>
+
+<script>
+  // aquí guardo el historial, porque el asistente no recuerda nada entre mensajes
+  var historial = [];
+  var ocupado = false, sample = null;
+  var vozOn = true, manosLibres = false, escuchando = false;
+  var wakeOn = false, wakeRec = null, wakeActivo = false, esperandoComando = false;
+
+  // cómo quiero que me hable: corto, porque lo va a leer en voz alta
+  var INSTRUCCIONES = "Eres Jarvis, un asistente personal estilo mayordomo de alta tecnología: elegante, ingenioso, leal y con un toque de humor seco. Hablas en español y llamas al usuario jefe. Tus respuestas se leen en voz alta, así que son breves (1 a 3 frases), sin markdown, sin listas ni emojis, a menos que el usuario pida algo largo. Si necesitas la fecha u hora, usa la herramienta hora_actual. Si no sabes algo, lo admites con honestidad.";
+
+  var $ = function (id) { return document.getElementById(id); };
+  var chat = $("chat"), input = $("input"), orb = $("orb");
+
+  function estado(e, texto) { orb.dataset.state = e; $("status").textContent = texto; }
+
+  function agregar(clase, texto) {
+    var d = document.createElement("div");
+    d.className = "msg " + clase;
+    d.textContent = texto;
+    chat.appendChild(d);
+    chat.scrollTop = chat.scrollHeight;
+    return d;
+  }
+
+  // pido a Claude apenas carga
+  claude.use("sample").then(function (s) {
+    sample = s;
+    if (!sample) { $("send").disabled = true; estado("idle", "Sin conexión con el asistente"); }
+    else agregar("bot", "Sistemas en línea. ¿En qué le ayudo, jefe?");
+  });
+
+  // ---------- voz: salida ----------
+  function hablar(texto) {
+    pararWake(); // mientras habla apago el micro para que no se escuche a sí mismo
+    if (!vozOn || !("speechSynthesis" in window)) { terminarHabla(); return; }
+    speechSynthesis.cancel();
+    var u = new SpeechSynthesisUtterance(texto.replace(/[*_`#>]/g, ""));
+    u.lang = "es-ES"; u.rate = 1.05;
+    var v = speechSynthesis.getVoices().filter(function (x) { return x.lang.indexOf("es") === 0; })[0];
+    if (v) u.voice = v;
+    u.onend = u.onerror = terminarHabla;
+    estado("speaking", "Hablando");
+    speechSynthesis.speak(u);
+  }
+  function terminarHabla() {
+    estado("idle", wakeOn ? "Esperando: oye Jarvis" : "En espera");
+    if (manosLibres) escuchar(); // en manos libres vuelve a escuchar solo
+    else if (wakeOn) iniciarWake(); // con la palabra de activación vuelve a quedar al acecho
+  }
+
+  // ---------- voz: entrada ----------
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var rec = null;
+  function escuchar() {
+    if (!SR || ocupado || escuchando) return;
+    pararWake(); // el micro lo usa el botón, así que pauso la palabra de activación
+    speechSynthesis.cancel();
+    rec = new SR();
+    rec.lang = "es-PE"; rec.interimResults = true; rec.continuous = false;
+    var final = "";
+    rec.onstart = function () { escuchando = true; $("mic").classList.add("on"); estado("listening", "Escuchando"); };
+    rec.onresult = function (e) {
+      var t = "";
+      for (var i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
+      input.value = t; final = t;
+    };
+    rec.onerror = function (e) {
+      manosLibres = false; $("manosBtn").classList.remove("on");
+      if (e.error === "not-allowed" || e.error === "service-not-allowed")
+        agregar("bot error", "No tengo acceso al micrófono aquí. Prueba abriendo el link en una pestaña completa o escríbeme.");
+    };
+    rec.onend = function () {
+      escuchando = false; $("mic").classList.remove("on");
+      if (final.trim()) enviar(final); else { estado("idle", "En espera"); iniciarWake(); }
+    };
+    try { rec.start(); } catch (e) {}
+  }
+  if (!SR) $("mic").disabled = true; // este navegador no soporta reconocimiento de voz
+
+  // ---------- palabra de activación: «oye Jarvis» ----------
+  // le quito tildes y signos para que detecte bien lo que digo (el largo del texto no cambia)
+  function limpiar(t) { return t.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9\s]/g, " "); }
+  // acepto varias formas porque el reconocimiento a veces escribe raro el nombre
+  var PATRON = /\b(oye|hey|ey|hola|ok)\s+(jarvis|yarvis|jarbis|garvis|jarvi)\b/;
+
+  function pararWake() {
+    wakeActivo = false;
+    if (wakeRec) { wakeRec.onend = null; wakeRec.onresult = null; try { wakeRec.abort(); } catch (e) {} wakeRec = null; }
+  }
+
+  function iniciarWake() {
+    if (!SR || !wakeOn || wakeActivo || ocupado || escuchando) return;
+    if ("speechSynthesis" in window && speechSynthesis.speaking) return; // no escucharme a mí mismo
+    wakeRec = new SR();
+    wakeRec.lang = "es-PE"; wakeRec.continuous = true; wakeRec.interimResults = false;
+    wakeRec.onresult = function (e) {
+      for (var i = e.resultIndex; i < e.results.length; i++) {
+        if (!e.results[i].isFinal || ocupado) continue;
+        var original = e.results[i][0].transcript.trim();
+        var m = limpiar(original).match(PATRON);
+        if (m) {
+          // lo que dije después de «oye Jarvis» es la orden
+          var orden = original.slice(m.index + m[0].length).replace(/^[\s,.:;!¡?¿-]+/, "");
+          if (orden.length > 1) { esperandoComando = false; enviar(orden); }
+          else {
+            // solo dije «oye Jarvis»: respondo y espero la orden
+            esperandoComando = true;
+            setTimeout(function () { esperandoComando = false; }, 15000);
+            hablar("Dígame, jefe.");
+          }
+          return;
+        }
+        if (esperandoComando && original) { esperandoComando = false; enviar(original); return; }
+      }
+    };
+    wakeRec.onerror = function (e) {
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        wakeOn = false; $("wakeBtn").classList.remove("on"); pararWake();
+        estado("idle", "En espera");
+        agregar("bot error", "No tengo acceso al micrófono aquí. Abre el link en una pestaña completa (Chrome o Edge) para usar «oye Jarvis».");
+      }
+    };
+    // Chrome corta la escucha cada tanto, así que la reinicio solita
+    wakeRec.onend = function () {
+      wakeActivo = false; wakeRec = null;
+      if (wakeOn) setTimeout(iniciarWake, 400);
+    };
+    try {
+      wakeRec.start(); wakeActivo = true;
+      if (orb.dataset.state === "idle") estado("idle", "Esperando: oye Jarvis");
+    } catch (e) { wakeActivo = false; }
+  }
+
+  // ---------- conversación ----------
+  async function enviar(texto) {
+    texto = (texto || "").trim();
+    if (!texto || ocupado || !sample) return;
+    ocupado = true; $("send").disabled = true; input.value = "";
+    agregar("user", texto);
+    historial.push({ role: "user", content: texto });
+
+    var recientes = historial.slice(-20).map(function (m) { return { role: m.role, content: m.content }; });
+    recientes[0] = { role: "user", content: INSTRUCCIONES + "\n\n" + recientes[0].content };
+
+    var burbuja = agregar("bot", "…");
+    estado("thinking", "Procesando");
+    var respuesta = "";
+    try {
+      var r = await sample(recientes, {
+        cache: false,
+        // una herramienta chiquita para que sepa la hora real
+        tools: [{
+          name: "hora_actual",
+          description: "Devuelve la fecha y hora actual del usuario",
+          inputSchema: { type: "object", properties: {} },
+          execute: function () { return new Date().toLocaleString("es-PE", { dateStyle: "full", timeStyle: "short" }); }
+        }],
+        onText: function (t) { burbuja.textContent = t.text; chat.scrollTop = chat.scrollHeight; }
+      });
+      respuesta = r.text;
+      burbuja.textContent = respuesta;
+      historial.push({ role: "assistant", content: respuesta });
+    } catch (e) {
+      burbuja.classList.add("error");
+      burbuja.textContent = e && e.code === "rate_limited" ? "Demasiadas solicitudes, jefe. Denme un momento." : "Tuve un fallo en mis sistemas. Intente de nuevo.";
+      historial.pop();
+    }
+    ocupado = false; $("send").disabled = !sample;
+    if (respuesta) hablar(respuesta);
+    else { estado("idle", wakeOn ? "Esperando: oye Jarvis" : "En espera"); iniciarWake(); }
+  }
+
+  // ---------- botones ----------
+  $("send").onclick = function () { enviar(input.value); };
+  input.onkeydown = function (e) { if (e.key === "Enter") enviar(input.value); };
+  $("mic").onclick = function () { if (escuchando && rec) rec.stop(); else escuchar(); };
+  $("vozBtn").onclick = function () {
+    vozOn = !vozOn; this.classList.toggle("on", vozOn);
+    if (!vozOn) speechSynthesis.cancel();
+  };
+  $("wakeBtn").onclick = function () {
+    if (!SR) { agregar("bot error", "Este navegador no soporta reconocimiento de voz. Usa Chrome o Edge."); return; }
+    wakeOn = !wakeOn; this.classList.toggle("on", wakeOn);
+    if (wakeOn) { manosLibres = false; $("manosBtn").classList.remove("on"); iniciarWake(); }
+    else { pararWake(); estado("idle", "En espera"); }
+  };
+  $("manosBtn").onclick = function () {
+    manosLibres = !manosLibres; this.classList.toggle("on", manosLibres);
+    if (manosLibres) { wakeOn = false; pararWake(); $("wakeBtn").classList.remove("on"); escuchar(); }
+  };
+</script>
+</body>
+</html>
